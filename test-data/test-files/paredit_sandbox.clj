@@ -146,3 +146,20 @@ string. "
             e
             f) g]
   :a)
+
+;; === Forward Slurp with Ignore Markers (#_)
+
+;; Slurp forward with ignored form
+;; Before: (|) #_(dosomething)
+;; Expected: (|#_(dosomething))
+(|) #_(dosomething)
+
+;; Slurp forward with ignored form and trailing code
+;; Before: (|) #_(foo) bar
+;; Expected: (|#_(foo) bar)
+(|) #_(foo) bar
+
+;; Non-empty list with ignored form
+;; Before: (str|) #_(ignored-code)
+;; Expected: (str| #_(ignored-code))
+(str|) #_(ignored-code)
