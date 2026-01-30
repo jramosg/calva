@@ -1895,6 +1895,18 @@ describe('paredit', () => {
           await paredit.forwardSlurpSexp(a);
           expect(textAndSelection(a)).toEqual(textAndSelection(b));
         });
+        it('slurps form including ignore marker', async () => {
+          const a = docFromTextNotation('(|) #_(dosomething)');
+          const b = docFromTextNotation('(|#_(dosomething))');
+          await paredit.forwardSlurpSexp(a);
+          expect(textAndSelection(a)).toEqual(textAndSelection(b));
+        });
+        it('slurps ignored form with trailing code', async () => {
+          const a = docFromTextNotation('(|) #_(foo) bar');
+          const b = docFromTextNotation('(|#_(foo) bar)');
+          await paredit.forwardSlurpSexp(a);
+          expect(textAndSelection(a)).toEqual(textAndSelection(b));
+        });
       });
 
       describe('Slurping backwards', () => {
