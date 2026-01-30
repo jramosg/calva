@@ -909,7 +909,7 @@ function forwardSlurpSexpEdits(doc: EditableDocument, start: number): ModelEdit<
     const wsStartOffset = wsInsideCursor.offsetStart;
     cursor.upList();
     const wsOutSideCursor = cursor.clone();
-    if (cursor.forwardSexp(true, true)) {
+    if (cursor.forwardSexp(true, true, true)) {
       wsOutSideCursor.forwardWhitespace(false);
       const wsEndOffset = wsOutSideCursor.offsetStart;
       const newCloseOffset = cursor.offsetStart;
