@@ -86,37 +86,7 @@ async function applyStructuralCommentsToSingleSelectionLines(
 ) {
   const originalSelections = [...editor.selections];
   const singleSelection = editor.selections[0];
-  const descendingLineNumbers = [...new Set(affectedLineNumbers)].sort((a, b) => b - a);
-  const affectedLineSet = new Set(affectedLineNumbers);
-  const originalFirstNonWSMap = new Map<number, number>();
-  const originalInsertionColumnMap = new Map<number, number>();
-  let alignedCommentColumn: number | undefined;
-
-  // Calculate aligned comment column and store original indentation.
-  for (const lineNum of affectedLineNumbers) {
-    const line = editor.document.lineAt(lineNum);
-    const firstNonWhitespace = line.firstNonWhitespaceCharacterIndex;
-    originalFirstNonWSMap.set(lineNum, firstNonWhitespace);
-
-    let insertionColumnCandidate = firstNonWhitespace;
-    if (
-      affectedLineNumbers.length > 1 &&
-      lineNum === singleSelection.start.line &&
-      singleSelection.start.character > firstNonWhitespace
-    ) {
-      insertionColumnCandidate = singleSelection.start.character;
-    }
-    originalInsertionColumnMap.set(lineNum, insertionColumnCandidate);
-
-    if (!line.isEmptyOrWhitespace) {
-      alignedCommentColumn =
-        alignedCommentColumn === undefined
-          ? insertionColumnCandidate
-          : Math.min(alignedCommentColumn, insertionColumnCandidate);
-    }
-  }
-
-  const resolvedAlignedCommentColumn = alignedCommentColumn ?? 0;
+  const prep = prepareStructuralCommentContext(editor, affectedLineNumbers, singleSelection);
 
   const mirrorDoc = docMirror.getDocument(editor.document);
   const structureBreakLineNums = new Set<number>();
@@ -124,13 +94,13 @@ async function applyStructuralCommentsToSingleSelectionLines(
   // Single atomic edit for all comment insertions
   await editor.edit(
     (editBuilder) => {
-      for (const lineNum of descendingLineNumbers) {
+      for (const lineNum of prep.descendingLineNumbers) {
         const currentLine = editor.document.lineAt(lineNum);
-        const firstNonWhitespace = originalFirstNonWSMap.get(lineNum) ?? 0;
+        const firstNonWhitespace = prep.originalFirstNonWSMap.get(lineNum) ?? 0;
         const rawInsertionColumn =
-          affectedLineNumbers.length > 1 ? resolvedAlignedCommentColumn : firstNonWhitespace;
+          affectedLineNumbers.length > 1 ? prep.resolvedAlignedCommentColumn : firstNonWhitespace;
         const insertionColumn = Math.min(rawInsertionColumn, currentLine.text.length);
-        originalInsertionColumnMap.set(lineNum, insertionColumn);
+        prep.originalInsertionColumnMap.set(lineNum, insertionColumn);
         const insertionOffset = editor.document.offsetAt(
           new vscode.Position(lineNum, insertionColumn)
         );
@@ -147,7 +117,7 @@ async function applyStructuralCommentsToSingleSelectionLines(
             const resolvedBreakOffset = resolveStructuralBreakOffset(
               mirrorDoc,
               wouldBreakWhere,
-              affectedLineSet
+              prep.descendingLineNumbers
             );
             if (resolvedBreakOffset === false) {
               skipBreak = true;
@@ -187,54 +157,120 @@ async function applyStructuralCommentsToSingleSelectionLines(
     await reformatEnclosingFormsForLines(editor, shiftedLineNumbers);
   }
 
-  function countInsertedLinesBefore(line: number): number {
-    let inserted = 0;
-    for (const breakLineNum of structureBreakLineNums) {
-      if (breakLineNum < line) {
-        inserted++;
-      }
-    }
-    return inserted;
-  }
-
-  function adjustPosition(pos: vscode.Position): vscode.Position {
-    const shiftedLine = pos.line + countInsertedLinesBefore(pos.line);
-
-    if (shiftedLine >= editor.document.lineCount) {
-      return pos;
-    }
-
-    const line = editor.document.lineAt(shiftedLine);
-    const newFirstNonWS = line.firstNonWhitespaceCharacterIndex;
-    const lineContent = line.text.slice(newFirstNonWS);
-
-    if (lineContent.startsWith(';; ')) {
-      const origFirstNonWS = originalFirstNonWSMap.get(pos.line) ?? pos.character;
-      const insertionColumn = originalInsertionColumnMap.get(pos.line);
-      const baseColumnForOffset =
-        pos.line === singleSelection.start.line &&
-        insertionColumn !== undefined &&
-        insertionColumn > origFirstNonWS
-          ? insertionColumn
-          : origFirstNonWS;
-      const contentOffset = Math.max(0, pos.character - baseColumnForOffset);
-      const newCol = Math.min(newFirstNonWS + 3 + contentOffset, line.text.length);
-      return new vscode.Position(shiftedLine, newCol);
-    }
-
-    const insertionColumn = originalInsertionColumnMap.get(pos.line);
-    if (insertionColumn !== undefined && pos.character >= insertionColumn) {
-      return new vscode.Position(shiftedLine, Math.min(pos.character + 3, line.text.length));
-    }
-
-    return new vscode.Position(shiftedLine, Math.min(pos.character, line.text.length));
-  }
-
   editor.selections = originalSelections.map((selection) => {
-    const newAnchor = adjustPosition(selection.anchor);
-    const newActive = adjustPosition(selection.active);
+    const newAnchor = adjustPositionAfterStructuralComment(
+      selection.anchor,
+      editor,
+      structureBreakLineNums,
+      prep,
+      singleSelection
+    );
+    const newActive = adjustPositionAfterStructuralComment(
+      selection.active,
+      editor,
+      structureBreakLineNums,
+      prep,
+      singleSelection
+    );
     return new vscode.Selection(newAnchor, newActive);
   });
+}
+
+type StructuralCommentPreparation = {
+  descendingLineNumbers: number[];
+  originalFirstNonWSMap: Map<number, number>;
+  originalInsertionColumnMap: Map<number, number>;
+  resolvedAlignedCommentColumn: number;
+};
+
+function prepareStructuralCommentContext(
+  editor: vscode.TextEditor,
+  affectedLineNumbers: number[],
+  singleSelection: vscode.Selection
+): StructuralCommentPreparation {
+  const descendingLineNumbers = [...new Set(affectedLineNumbers)].sort((a, b) => b - a);
+  const originalFirstNonWSMap = new Map<number, number>();
+  const originalInsertionColumnMap = new Map<number, number>();
+  let alignedCommentColumn: number | undefined;
+
+  for (const lineNum of affectedLineNumbers) {
+    const line = editor.document.lineAt(lineNum);
+    const firstNonWhitespace = line.firstNonWhitespaceCharacterIndex;
+    originalFirstNonWSMap.set(lineNum, firstNonWhitespace);
+
+    let insertionColumnCandidate = firstNonWhitespace;
+    if (
+      affectedLineNumbers.length > 1 &&
+      lineNum === singleSelection.start.line &&
+      singleSelection.start.character > firstNonWhitespace
+    ) {
+      insertionColumnCandidate = singleSelection.start.character;
+    }
+    originalInsertionColumnMap.set(lineNum, insertionColumnCandidate);
+
+    if (!line.isEmptyOrWhitespace) {
+      alignedCommentColumn =
+        alignedCommentColumn === undefined
+          ? insertionColumnCandidate
+          : Math.min(alignedCommentColumn, insertionColumnCandidate);
+    }
+  }
+
+  return {
+    descendingLineNumbers,
+    originalFirstNonWSMap,
+    originalInsertionColumnMap,
+    resolvedAlignedCommentColumn: alignedCommentColumn ?? 0,
+  };
+}
+
+function countInsertedLinesBefore(line: number, structureBreakLineNums: Set<number>): number {
+  let inserted = 0;
+  for (const breakLineNum of structureBreakLineNums) {
+    if (breakLineNum < line) {
+      inserted++;
+    }
+  }
+  return inserted;
+}
+
+function adjustPositionAfterStructuralComment(
+  pos: vscode.Position,
+  editor: vscode.TextEditor,
+  structureBreakLineNums: Set<number>,
+  prep: StructuralCommentPreparation,
+  singleSelection: vscode.Selection
+): vscode.Position {
+  const shiftedLine = pos.line + countInsertedLinesBefore(pos.line, structureBreakLineNums);
+
+  if (shiftedLine >= editor.document.lineCount) {
+    return pos;
+  }
+
+  const line = editor.document.lineAt(shiftedLine);
+  const newFirstNonWS = line.firstNonWhitespaceCharacterIndex;
+  const lineContent = line.text.slice(newFirstNonWS);
+
+  if (lineContent.startsWith(';; ')) {
+    const origFirstNonWS = prep.originalFirstNonWSMap.get(pos.line) ?? pos.character;
+    const insertionColumn = prep.originalInsertionColumnMap.get(pos.line);
+    const baseColumnForOffset =
+      pos.line === singleSelection.start.line &&
+      insertionColumn !== undefined &&
+      insertionColumn > origFirstNonWS
+        ? insertionColumn
+        : origFirstNonWS;
+    const contentOffset = Math.max(0, pos.character - baseColumnForOffset);
+    const newCol = Math.min(newFirstNonWS + 3 + contentOffset, line.text.length);
+    return new vscode.Position(shiftedLine, newCol);
+  }
+
+  const insertionColumn = prep.originalInsertionColumnMap.get(pos.line);
+  if (insertionColumn !== undefined && pos.character >= insertionColumn) {
+    return new vscode.Position(shiftedLine, Math.min(pos.character + 3, line.text.length));
+  }
+
+  return new vscode.Position(shiftedLine, Math.min(pos.character, line.text.length));
 }
 
 /**
@@ -248,7 +284,7 @@ async function applyStructuralCommentsToSingleSelectionLines(
 function resolveStructuralBreakOffset(
   mirrorDoc: EditableDocument,
   wouldBreakWhere: number,
-  affectedLineSet: Set<number>
+  lineNumbers: number[]
 ): number | false {
   const cursor = mirrorDoc.getTokenCursor(wouldBreakWhere);
   const token = cursor.getToken();
@@ -263,7 +299,7 @@ function resolveStructuralBreakOffset(
         if (!finder.backwardList()) {
           return probe.offsetStart;
         }
-        if (!affectedLineSet.has(finder.line)) {
+        if (!lineNumbers.includes(finder.line)) {
           return probe.offsetStart;
         }
       }
@@ -274,7 +310,7 @@ function resolveStructuralBreakOffset(
 
   const endCursor = cursor.clone();
   if (endCursor.forwardSexp(true, true, true)) {
-    return affectedLineSet.has(endCursor.line) ? false : wouldBreakWhere;
+    return lineNumbers.includes(endCursor.line) ? false : wouldBreakWhere;
   }
 
   return wouldBreakWhere;
@@ -356,6 +392,8 @@ async function reformatEnclosingFormsForLines(
   await reformatRanges(editor, ranges);
 }
 
+function getDescendingLineNumbers();
+
 /**
  * Adds or removes comment prefixes on the given lines.
  * When uncommenting, removes any leading semicolon sequence plus trailing spaces.
@@ -407,9 +445,9 @@ async function updateLineComments(
 async function toggleCommentsThenReformatEnclosingForms(
   editor: vscode.TextEditor,
   affectedLineNumbers: number[],
-  shouldUncomment: boolean
+  allNonEmptyLinesCommented: boolean
 ) {
-  await updateLineComments(editor, affectedLineNumbers, shouldUncomment);
+  await updateLineComments(editor, affectedLineNumbers, allNonEmptyLinesCommented);
   await reformatEnclosingFormsForLines(editor, affectedLineNumbers);
 }
 
