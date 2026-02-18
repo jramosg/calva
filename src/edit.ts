@@ -86,7 +86,7 @@ async function applyStructuralCommentsToSingleSelectionLines(
 ) {
   const originalSelections = [...editor.selections];
   const singleSelection = editor.selections[0];
-  const prep = prepareStructuralCommentContext(editor, affectedLineNumbers, singleSelection);
+  const ctx = prepareStructuralCommentCtx(editor, affectedLineNumbers, singleSelection);
 
   const mirrorDoc = docMirror.getDocument(editor.document);
   const structureBreakLineNums = new Set<number>();
@@ -94,13 +94,13 @@ async function applyStructuralCommentsToSingleSelectionLines(
   // Single atomic edit for all comment insertions
   await editor.edit(
     (editBuilder) => {
-      for (const lineNum of prep.descendingLineNumbers) {
+      for (const lineNum of ctx.descendingLineNumbers) {
         const currentLine = editor.document.lineAt(lineNum);
-        const firstNonWhitespace = prep.originalFirstNonWSMap.get(lineNum) ?? 0;
+        const firstNonWhitespace = ctx.originalFirstNonWSMap.get(lineNum) ?? 0;
         const rawInsertionColumn =
-          affectedLineNumbers.length > 1 ? prep.resolvedAlignedCommentColumn : firstNonWhitespace;
+          affectedLineNumbers.length > 1 ? ctx.resolvedAlignedCommentColumn : firstNonWhitespace;
         const insertionColumn = Math.min(rawInsertionColumn, currentLine.text.length);
-        prep.originalInsertionColumnMap.set(lineNum, insertionColumn);
+        ctx.originalInsertionColumnMap.set(lineNum, insertionColumn);
         const insertionOffset = editor.document.offsetAt(
           new vscode.Position(lineNum, insertionColumn)
         );
@@ -117,7 +117,7 @@ async function applyStructuralCommentsToSingleSelectionLines(
             const resolvedBreakOffset = resolveStructuralBreakOffset(
               mirrorDoc,
               wouldBreakWhere,
-              prep.descendingLineNumbers
+              ctx.descendingLineNumbers
             );
             if (resolvedBreakOffset === false) {
               skipBreak = true;
@@ -162,14 +162,14 @@ async function applyStructuralCommentsToSingleSelectionLines(
       selection.anchor,
       editor,
       structureBreakLineNums,
-      prep,
+      ctx,
       singleSelection
     );
     const newActive = adjustPositionAfterStructuralComment(
       selection.active,
       editor,
       structureBreakLineNums,
-      prep,
+      ctx,
       singleSelection
     );
     return new vscode.Selection(newAnchor, newActive);
@@ -183,12 +183,12 @@ type StructuralCommentPreparation = {
   resolvedAlignedCommentColumn: number;
 };
 
-function prepareStructuralCommentContext(
+function prepareStructuralCommentCtx(
   editor: vscode.TextEditor,
   affectedLineNumbers: number[],
   singleSelection: vscode.Selection
 ): StructuralCommentPreparation {
-  const descendingLineNumbers = [...new Set(affectedLineNumbers)].sort((a, b) => b - a);
+  const descendingLineNumbers = getDescendingLineNumbers(affectedLineNumbers);
   const originalFirstNonWSMap = new Map<number, number>();
   const originalInsertionColumnMap = new Map<number, number>();
   let alignedCommentColumn: number | undefined;
@@ -392,7 +392,9 @@ async function reformatEnclosingFormsForLines(
   await reformatRanges(editor, ranges);
 }
 
-function getDescendingLineNumbers();
+function getDescendingLineNumbers(lineNumbers: number[]): number[] {
+  return [...new Set(lineNumbers)].sort((a, b) => b - a);
+}
 
 /**
  * Adds or removes comment prefixes on the given lines.
@@ -404,7 +406,7 @@ async function updateLineComments(
   affectedLineNumbers: number[],
   shouldUncomment: boolean
 ) {
-  const descendingLineNumbers = [...new Set(affectedLineNumbers)].sort((a, b) => b - a);
+  const descendingLineNumbers = getDescendingLineNumbers(affectedLineNumbers);
 
   await editor.edit(
     (editBuilder) => {
