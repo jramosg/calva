@@ -205,12 +205,10 @@ async function applyStructuralCommentsToSingleSelectionLines(
     }
   );
 
-  if (affectedLineNumbers.length > 1) {
-    if (structureBreakLineNums.size > 0) {
-      await reindentStructuralBreakLines(editor, structureBreakLineNums);
-    } else {
-      await editor.edit(() => undefined, { undoStopBefore: false, undoStopAfter: true });
-    }
+  if (affectedLineNumbers.length > 1 && structureBreakLineNums.size > 0) {
+    await reindentStructuralBreakLines(editor, structureBreakLineNums);
+  } else {
+    await editor.edit(() => undefined, { undoStopBefore: false, undoStopAfter: true });
   }
 
   function countInsertedLinesBefore(line: number): number {
