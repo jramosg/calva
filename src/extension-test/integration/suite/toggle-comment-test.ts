@@ -243,7 +243,7 @@ suite(suiteName, () => {
   it('should structurally comment two selected lines and preserve closing delimiter and selection', async () => {
     assert.equal(
       await toggleCommentUsingActiveEditor('(assoc {}•         |:a•         :b|)'),
-      '(assoc {}•         |;; :a•         ;; :b|•         )'
+      '(assoc {}•         |;; :a•         ;; :b|•       )'
     );
   });
 
@@ -252,7 +252,7 @@ suite(suiteName, () => {
       await toggleCommentUsingActiveEditor(
         '(ns main.server•  #_(:require [babashka.fs :as fs])•  (:gen-class))••(defn -main•  "I don\'t do a whole lot ... yet."•  [& _args]•  (println "Hello, World!"))••(comment•  (-main)•  (System/getProperty "user.dir")•  (rand-int 100)•  (with-open [r (java.io.FileInputStream. "/dev/urandom")]•    |(mod (->> #(.read r)•              repeatedly•              (filter #(not (>= % 200)))•              (take 1)•              doall•              first)•         100)|)•  :rcf)'
       ),
-      '(ns main.server•  #_(:require [babashka.fs :as fs])•  (:gen-class))••(defn -main•  "I don\'t do a whole lot ... yet."•  [& _args]•  (println "Hello, World!"))••(comment•  (-main)•  (System/getProperty "user.dir")•  (rand-int 100)•  (with-open [r (java.io.FileInputStream. "/dev/urandom")]•    |;; (mod (->> #(.read r)•    ;;           repeatedly•    ;;           (filter #(not (>= % 200)))•    ;;           (take 1)•    ;;           doall•    ;;           first)•    ;;      100)|•         )•  :rcf)'
+      '(ns main.server•  #_(:require [babashka.fs :as fs])•  (:gen-class))••(defn -main•  "I don\'t do a whole lot ... yet."•  [& _args]•  (println "Hello, World!"))••(comment•  (-main)•  (System/getProperty "user.dir")•  (rand-int 100)•  (with-open [r (java.io.FileInputStream. "/dev/urandom")]•    |;; (mod (->> #(.read r)•    ;;           repeatedly•    ;;           (filter #(not (>= % 200)))•    ;;           (take 1)•    ;;           doall•    ;;           first)•    ;;      100)|•    )•  :rcf)'
     );
   });
 
@@ -280,14 +280,14 @@ suite(suiteName, () => {
   it('should structurally comment multiline selection nested in parent form and preserve full selected range', async () => {
     assert.equal(
       await toggleCommentUsingActiveEditor('(x•  (y |(a b•        c)|)•  z)'),
-      '(x•  (y |;; (a b•     ;;    c)|•        )•  z)'
+      '(x•  (y |;; (a b•     ;;    c)|•   )•  z)'
     );
   });
 
   it('should structurally comment multiline selection nested in j/y forms and keep full selected range', async () => {
     assert.equal(
       await toggleCommentUsingActiveEditor('(x• (j |(y •     (a b c))|)• z)'),
-      '(x• (j |;; (y •    ;;  (a b c))|•     )• z)'
+      '(x• (j |;; (y •    ;;  (a b c))|•  )• z)'
     );
   });
 
