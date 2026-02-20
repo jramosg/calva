@@ -205,10 +205,25 @@ async function applyStructuralCommentsToSingleSelectionLines(
     }
   );
 
-  if (affectedLineNumbers.length > 1 && structureBreakLineNums.size > 0) {
-    await reindentStructuralBreakLines(editor, structureBreakLineNums);
+  // Compute shifted line numbers (structure breaks insert newlines, pushing later lines down)
+  const shiftedLineNumbers = affectedLineNumbers.map((lineNum) => {
+    let shift = 0;
+    for (const breakLineNum of structureBreakLineNums) {
+      if (breakLineNum < lineNum) {
+        shift++;
+      }
+    }
+    return lineNum + shift;
+  });
+
+  if (affectedLineNumbers.length > 1) {
+    if (structureBreakLineNums.size > 0) {
+      await reindentStructuralBreakLines(editor, structureBreakLineNums);
+    } else {
+      await editor.edit(() => undefined, { undoStopBefore: false, undoStopAfter: true });
+    }
   } else {
-    await editor.edit(() => undefined, { undoStopBefore: false, undoStopAfter: true });
+    await reformatEnclosingFormsForLines(editor, shiftedLineNumbers);
   }
 
   function countInsertedLinesBefore(line: number): number {
