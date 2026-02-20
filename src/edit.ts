@@ -339,15 +339,10 @@ async function reindentStructuralBreakLines(
   // the closing delimiter to a new line. Compute the shifted position for each
   // break and fix the delimiter line's indentation.
   const breakIndentEdits: vscode.TextEdit[] = [];
+  let shift = 0;
   for (const breakLineNum of structureBreakLineNums) {
-    // Count how many earlier breaks shifted this line down
-    let shift = 0;
-    for (const otherBreak of structureBreakLineNums) {
-      if (otherBreak < breakLineNum) {
-        shift++;
-      }
-    }
     const delimiterLine = breakLineNum + shift + 1;
+    shift++;
     if (delimiterLine >= editor.document.lineCount) {
       continue;
     }
