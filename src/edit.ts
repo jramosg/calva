@@ -205,21 +205,12 @@ async function applyStructuralCommentsToSingleSelectionLines(
     }
   );
 
-  // Compute shifted line numbers (structure breaks insert newlines, pushing later lines down)
-  const shiftedLineNumbers = affectedLineNumbers.map((lineNum) => {
-    let shift = 0;
-    for (const breakLineNum of structureBreakLineNums) {
-      if (breakLineNum < lineNum) {
-        shift++;
-      }
-    }
-    return lineNum + shift;
-  });
-
   if (affectedLineNumbers.length > 1) {
-    await editor.edit(() => undefined, { undoStopBefore: false, undoStopAfter: true });
-  } else {
-    await reformatEnclosingFormsForLines(editor, shiftedLineNumbers);
+    if (structureBreakLineNums.size > 0) {
+      await reindentStructuralBreakLines(editor, structureBreakLineNums);
+    } else {
+      await editor.edit(() => undefined, { undoStopBefore: false, undoStopAfter: true });
+    }
   }
 
   function countInsertedLinesBefore(line: number): number {
@@ -335,6 +326,53 @@ function resolveStructuralBreakOffset(
   return wouldBreakWhere;
 }
 
+/**
+ * Fixes indentation of lines created by structural breaks (closing delimiters
+ * pushed to new lines) without reformatting the whole enclosing form. This
+ * preserves comment positions while correcting only the delimiter indentation.
+ */
+async function reindentStructuralBreakLines(
+  editor: vscode.TextEditor,
+  structureBreakLineNums: Set<number>
+) {
+  // Each structural break inserted a newline after the comment line, pushing
+  // the closing delimiter to a new line. Compute the shifted position for each
+  // break and fix the delimiter line's indentation.
+  const breakIndentEdits: vscode.TextEdit[] = [];
+  for (const breakLineNum of structureBreakLineNums) {
+    // Count how many earlier breaks shifted this line down
+    let shift = 0;
+    for (const otherBreak of structureBreakLineNums) {
+      if (otherBreak < breakLineNum) {
+        shift++;
+      }
+    }
+    const delimiterLine = breakLineNum + shift + 1;
+    if (delimiterLine >= editor.document.lineCount) {
+      continue;
+    }
+    const pos = new vscode.Position(
+      delimiterLine,
+      editor.document.lineAt(delimiterLine).firstNonWhitespaceCharacterIndex
+    );
+    const edits = format.calculateIndentEdit(pos, editor.document);
+    breakIndentEdits.push(...edits);
+  }
+
+  if (breakIndentEdits.length > 0) {
+    await editor.edit(
+      (editBuilder) => {
+        for (const edit of breakIndentEdits) {
+          editBuilder.replace(edit.range, edit.newText);
+        }
+      },
+      { undoStopBefore: false, undoStopAfter: true }
+    );
+  } else {
+    await editor.edit(() => undefined, { undoStopBefore: false, undoStopAfter: true });
+  }
+}
+
 type OffsetRange = [number, number];
 
 function collectEnclosingFormRanges(
@@ -431,7 +469,8 @@ async function updateLineComments(
         const lineText = line.text;
 
         if (shouldUncomment) {
-          const removalStart = findCommentPrefixStart(lineText, candidatesMap.get(lineNum) ?? []);
+          const candidates = candidatesMap.get(lineNum) ?? [];
+          const removalStart = findCommentPrefixStart(lineText, candidates);
           if (removalStart === undefined) {
             continue;
           }
