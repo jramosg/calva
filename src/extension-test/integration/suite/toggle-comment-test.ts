@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { before, after, it } from 'mocha';
+import { suite, before, after, it } from 'mocha';
 import * as path from 'path';
 import * as testUtil from './util';
 import * as vscode from 'vscode';
@@ -320,5 +320,12 @@ suite(suiteName, () => {
     await new Promise((resolve) => setTimeout(resolve, pauseMs));
     const nestedUncommented = textNotationFromDocAndSelections(editor.document, editor.selections);
     assert.equal(nestedUncommented, nested);
+  });
+
+  it('should structurally comment top-level form with no parent form (edge case)', async () => {
+    assert.equal(
+      await toggleCommentUsingActiveEditor('|(foo |(bar)|•baz)|'),
+      '|;; (foo (bar)•;; baz)|'
+    );
   });
 });
