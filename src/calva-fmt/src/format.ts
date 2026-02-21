@@ -139,7 +139,8 @@ function whitespaceAndNsEdits(
 function rangeReformatChanges(
   document: vscode.TextDocument,
   originalRange: vscode.Range,
-  onType: boolean
+  onType: boolean,
+  extraCljfmtOptions?: CljfmtOptionOverrides
 ): respacer.WhitespaceChange[] | undefined {
   const mirrorDoc = getDocument(document);
   const startIndex = document.offsetAt(originalRange.start);
@@ -153,8 +154,29 @@ function rangeReformatChanges(
     const fullDocument = startIndex === 0 && endIndex === document.getText().length;
 
     if (fullDocument) {
-      const formattedText = formatCode(originalText, document.eol, true);
+      const formattedText = formatCode(originalText, document.eol, true, extraCljfmtOptions);
       return whitespaceAndNsEdits(eol, startIndex, originalText, formattedText);
+    }
+
+    if (extraCljfmtOptions) {
+      // When overriding cljfmt options (e.g. indent-line-comments? false), bypass
+      // the healer. The healer's unbandage adds startIndent to all non-first lines,
+      // which double-counts for lines whose indentation was preserved by the formatter
+      // (like comment lines with indent-line-comments? false). Instead, strip
+      // startIndent before formatting and add it back after.
+      const startIndent = originalRange.start.character;
+      const lines = originalText.split(eol);
+      const stripPattern = new RegExp(`^ {0,${startIndent}}`);
+      const strippedText = lines
+        .map((line, i) => (i === 0 ? line : line.replace(stripPattern, '')))
+        .join(eol);
+      const formattedStripped = formatCode(strippedText, document.eol, false, extraCljfmtOptions);
+      const padding = ' '.repeat(startIndent);
+      const finalText = formattedStripped
+        .split(eol)
+        .map((line, i) => (i === 0 ? line : padding + line))
+        .join(eol);
+      return whitespaceAndNsEdits(eol, startIndex, originalText, finalText);
     }
 
     const healing = healer.bandage(originalText, originalRange.start.character, eol);
@@ -170,13 +192,14 @@ function rangeReformatChanges(
 
 export function formatRangeEdits(
   document: vscode.TextDocument,
-  originalRange: vscode.Range
+  originalRange: vscode.Range,
+  extraCljfmtOptions?: CljfmtOptionOverrides
 ): vscode.TextEdit[] | undefined {
   // Output/REPL window holds prompts etc. The formatter cannot format it. Do not try.
   if (outputWindow.isReplWindowDoc(document)) {
     return [];
   }
-  return rangeReformatChanges(document, originalRange, false).map((chg) =>
+  return rangeReformatChanges(document, originalRange, false, extraCljfmtOptions).map((chg) =>
     vscode.TextEdit.replace(
       new vscode.Range(document.positionAt(chg.start), document.positionAt(chg.end)),
       chg.text
@@ -411,11 +434,46 @@ export function trimWhiteSpacePositionCommand(editor: vscode.TextEditor) {
   void formatPosition(editor, false, { 'remove-multiple-non-indenting-spaces?': true });
 }
 
-export function formatCode(code: string, eol: number, fullDocument: boolean = true) {
+export type CljfmtOptionOverrides = Record<string, boolean | string | number>;
+
+/**
+ * Modifies a cljfmt EDN options string to override specific keys.
+ * For each key-value pair in overrides, replaces the existing value in the EDN
+ * or appends the key-value pair before the closing brace.
+ */
+function applyCljfmtOverrides(ednString: string, overrides: CljfmtOptionOverrides): string {
+  let result = ednString;
+  for (const [key, value] of Object.entries(overrides)) {
+    const ednKey = `:${key}`;
+    const ednValue = typeof value === 'boolean' ? String(value) : String(value);
+    const pattern = new RegExp(`${ednKey.replace('?', '\\?')}\\s+\\S+`);
+    if (pattern.test(result)) {
+      result = result.replace(pattern, `${ednKey} ${ednValue}`);
+    } else {
+      // Append before closing brace
+      result = result.replace(/\}$/, ` ${ednKey} ${ednValue}}`);
+    }
+  }
+  return result;
+}
+
+export function formatCode(
+  code: string,
+  eol: number,
+  fullDocument: boolean = true,
+  extraCljfmtOptions?: CljfmtOptionOverrides
+) {
+  const cfg = { ...config.getConfigNow() };
+  if (extraCljfmtOptions && cfg['cljfmt-options-string']) {
+    cfg['cljfmt-options-string'] = applyCljfmtOverrides(
+      cfg['cljfmt-options-string'] as string,
+      extraCljfmtOptions
+    );
+  }
   const d = {
     'range-text': code,
     eol: _convertEolNumToStringNotation(eol),
-    config: { ...config.getConfigNow(), 'full-document?': fullDocument },
+    config: { ...cfg, 'full-document?': fullDocument },
   };
   const result = jsify(formatText(d));
   if (!result['error']) {

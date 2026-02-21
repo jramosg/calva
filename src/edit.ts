@@ -216,10 +216,43 @@ async function applyStructuralCommentsToSingleSelectionLines(
     return lineNum + shift;
   });
 
+  // Save post-comment indentation before reformatting so adjustPosition can
+  // compute how much each line shifted during reformatting.
+  const postCommentFirstNonWSMap = new Map<number, number>();
+  for (const lineNum of shiftedLineNumbers) {
+    if (lineNum < editor.document.lineCount) {
+      postCommentFirstNonWSMap.set(
+        lineNum,
+        editor.document.lineAt(lineNum).firstNonWhitespaceCharacterIndex
+      );
+    }
+  }
+
   if (affectedLineNumbers.length > 1) {
     if (structureBreakLineNums.size > 0) {
-      await reindentStructuralBreakLines(editor, structureBreakLineNums);
+      // Compute delimiter line numbers from structural breaks (these lines have actual
+      // code tokens that collectEnclosingFormRanges can navigate from)
+      const delimiterLineNumbers: number[] = [];
+      {
+        let shift = 0;
+        for (const breakLineNum of structureBreakLineNums) {
+          const delimiterLine = breakLineNum + shift + 1;
+          shift++;
+          if (delimiterLine < editor.document.lineCount) {
+            delimiterLineNumbers.push(delimiterLine);
+          }
+        }
+      }
+      // Use getFormSelection (useCurrentForm=true) for delimiter lines so we reformat the
+      // form being closed (e.g. (y ...)) rather than its parent (e.g. (x ...))
+      await reformatEnclosingFormsForLines(
+        editor,
+        delimiterLineNumbers,
+        { 'indent-line-comments?': false },
+        true
+      );
     } else {
+      // No structural breaks — no reformatting needed, just close the undo group
       await editor.edit(() => undefined, { undoStopBefore: false, undoStopAfter: true });
     }
   } else {
@@ -264,8 +297,13 @@ async function applyStructuralCommentsToSingleSelectionLines(
     const lineContent = line.text.slice(newFirstNonWS);
     const insertionColumn = originalInsertionColumnMap.get(pos.line);
 
+    // Compute how much this line shifted due to reformatting
+    const preReformatFirstNonWS = postCommentFirstNonWSMap.get(shiftedLine);
+    const reformatShift =
+      preReformatFirstNonWS !== undefined ? newFirstNonWS - preReformatFirstNonWS : 0;
+
     if (isSelectionStartAtInsertionColumn(insertionColumn, pos)) {
-      return new vscode.Position(shiftedLine, insertionColumn);
+      return new vscode.Position(shiftedLine, Math.max(0, insertionColumn + reformatShift));
     }
 
     if (lineContent.startsWith(';; ')) {
@@ -277,7 +315,10 @@ async function applyStructuralCommentsToSingleSelectionLines(
     }
 
     if (insertionColumn !== undefined && pos.character >= insertionColumn) {
-      return new vscode.Position(shiftedLine, Math.min(pos.character + 3, line.text.length));
+      return new vscode.Position(
+        shiftedLine,
+        Math.min(pos.character + 3 + reformatShift, line.text.length)
+      );
     }
 
     return new vscode.Position(shiftedLine, Math.min(pos.character, line.text.length));
@@ -339,67 +380,44 @@ function resolveStructuralBreakOffset(
   return wouldBreakWhere;
 }
 
-/**
- * Fixes indentation of lines created by structural breaks (closing delimiters
- * pushed to new lines) without reformatting the whole enclosing form. This
- * preserves comment positions while correcting only the delimiter indentation.
- */
-async function reindentStructuralBreakLines(
-  editor: vscode.TextEditor,
-  structureBreakLineNums: Set<number>
-) {
-  // Each structural break inserted a newline after the comment line, pushing
-  // the closing delimiter to a new line. Compute the shifted position for each
-  // break and fix the delimiter line's indentation.
-  const breakIndentEdits: vscode.TextEdit[] = [];
-  let shift = 0;
-  for (const breakLineNum of structureBreakLineNums) {
-    const delimiterLine = breakLineNum + shift + 1;
-    shift++;
-    if (delimiterLine >= editor.document.lineCount) {
-      continue;
-    }
-    const pos = new vscode.Position(
-      delimiterLine,
-      editor.document.lineAt(delimiterLine).firstNonWhitespaceCharacterIndex
-    );
-    const edits = format.calculateIndentEdit(pos, editor.document);
-    breakIndentEdits.push(...edits);
-  }
-
-  if (breakIndentEdits.length > 0) {
-    await editor.edit(
-      (editBuilder) => {
-        for (const edit of breakIndentEdits) {
-          editBuilder.replace(edit.range, edit.newText);
-        }
-      },
-      { undoStopBefore: false, undoStopAfter: true }
-    );
-  } else {
-    await editor.edit(() => undefined, { undoStopBefore: false, undoStopAfter: true });
-  }
-}
-
 type OffsetRange = [number, number];
 
 function collectEnclosingFormRanges(
   document: vscode.TextDocument,
-  lineNumbers: number[]
+  lineNumbers: number[],
+  useCurrentForm = false
 ): OffsetRange[] {
   const uniqueRanges = new Map<string, OffsetRange>();
 
   for (const lineNum of lineNumbers) {
     const line = document.lineAt(lineNum);
     const position = new vscode.Position(lineNum, line.firstNonWhitespaceCharacterIndex);
-    const enclosing = select.getEnclosingFormSelection(document, position);
-    if (!enclosing) {
+    let range: OffsetRange | undefined;
+
+    if (useCurrentForm) {
+      // For delimiter lines (closing parens on their own line), use rangeForList(1)
+      // to find the form being closed rather than the parent form
+      const mirrorDoc = docMirror.getDocument(document);
+      const offset = document.offsetAt(position);
+      const cursor = mirrorDoc.getTokenCursor(offset);
+      const listRange = cursor.rangeForList(1);
+      if (listRange) {
+        range = listRange;
+      }
+    }
+
+    if (!range) {
+      const enclosing =
+        select.getEnclosingFormSelection(document, position) ??
+        select.getFormSelection(document, position, false);
+      if (enclosing) {
+        range = [document.offsetAt(enclosing.start), document.offsetAt(enclosing.end)];
+      }
+    }
+
+    if (!range) {
       continue;
     }
-    const range: OffsetRange = [
-      document.offsetAt(enclosing.start),
-      document.offsetAt(enclosing.end),
-    ];
     uniqueRanges.set(`${range[0]}:${range[1]}`, range);
   }
 
@@ -410,14 +428,18 @@ function collectEnclosingFormRanges(
  * Applies formatting edits for each range sequentially (descending by offset)
  * because formatting one range may shift positions in later ranges.
  */
-async function reformatRanges(editor: vscode.TextEditor, ranges: OffsetRange[]) {
+async function reformatRanges(
+  editor: vscode.TextEditor,
+  ranges: OffsetRange[],
+  extraCljfmtOptions?: format.CljfmtOptionOverrides
+) {
   for (let i = 0; i < ranges.length; i++) {
     const [start, end] = ranges[i];
     const range = new vscode.Range(
       editor.document.positionAt(start),
       editor.document.positionAt(end)
     );
-    const edits = format.formatRangeEdits(editor.document, range);
+    const edits = format.formatRangeEdits(editor.document, range, extraCljfmtOptions);
     const isLast = i === ranges.length - 1;
 
     if (!edits || edits.length === 0) {
@@ -446,15 +468,17 @@ async function reformatRanges(editor: vscode.TextEditor, ranges: OffsetRange[]) 
  */
 async function reformatEnclosingFormsForLines(
   editor: vscode.TextEditor,
-  affectedLineNumbers: number[]
+  affectedLineNumbers: number[],
+  extraCljfmtOptions?: format.CljfmtOptionOverrides,
+  useCurrentForm = false
 ) {
-  const ranges = collectEnclosingFormRanges(editor.document, affectedLineNumbers);
+  const ranges = collectEnclosingFormRanges(editor.document, affectedLineNumbers, useCurrentForm);
   if (ranges.length === 0) {
     await editor.edit(() => undefined, { undoStopBefore: false, undoStopAfter: true });
     return;
   }
 
-  await reformatRanges(editor, ranges);
+  await reformatRanges(editor, ranges, extraCljfmtOptions);
 }
 
 /**
